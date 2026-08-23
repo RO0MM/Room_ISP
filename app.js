@@ -33,6 +33,7 @@ const mbps = (bps) => `${Math.round(Number(bps||0)/1_000_000)} Mbps`;
 const initials = (s) => String(s||"U").split(/[\s@._-]+/).filter(Boolean).slice(0,2).map(x=>x[0]).join("").toUpperCase();
 const val = (f,n) => f.elements[n]?.value?.trim?.() ?? "";
 const num = (f,n) => Number(f.elements[n]?.value || 0);
+const one = (v) => Array.isArray(v) ? (v[0] || {}) : (v || {});
 
 function toast(message,type="ok"){
   const el=document.createElement("div"); el.className=`toast ${type}`; el.textContent=message;
@@ -51,7 +52,7 @@ function destroyVisuals(){state.charts.forEach(c=>{try{c.destroy()}catch{}});sta
 
 async function api(url,body){
   if(!url) throw new Error("API no configurada");
-  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${state.session?.access_token||""}`},body:JSON.stringify(body)});
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${state.session?.access_token||""}`,"apikey":C.SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify(body)});
   const j=await r.json().catch(()=>({}));
   if(!r.ok || j.ok===false) throw new Error(j.error?.message||j.error||j.message||`HTTP ${r.status}`);
   return j;
@@ -184,7 +185,32 @@ async function renderPlatform(page){
  }
  if(page==="isps"){
   const d=await superApi("organizations"), arr=d.organizations||[];
-  c.innerHTML=pageHead("Proveedores ISP","Tenants independientes administrados por ROOM ISP")+table(["ISP","Estado","Clientes","Routers","Online","Plan"],arr.map(o=>`<tr><td><b>${esc(o.name)}</b><br><span class="muted">${esc(o.slug||"")}</span></td><td>${badge(o.status)}</td><td>${o.customer_count||0}</td><td>${o.router_count||0}</td><td>${o.routers_online||0}</td><td>${esc(o.organization_subscriptions?.plan_code||"—")}</td></tr>`));return;
+  c.innerHTML=pageHead("Proveedores ISP","Crea, administra y controla las cuentas ISP de ROOM ISP",`<button class="btn primary" id="new-isp">${icon("building-2")} Crear ISP</button>`)+`<div class="toolbar"><div class="search">${icon("search")}<input class="input" id="isp-search" placeholder="Buscar por ISP, slug, OWNER o correo"></div><select class="select" id="isp-status" style="width:auto;min-width:160px"><option value="">Todos los estados</option><option value="ACTIVE">Activos</option><option value="TRIAL">Prueba</option><option value="SUSPENDED">Suspendidos</option></select></div><div id="isp-table"></div>`;
+
+  const draw=()=>{
+   const q=String($("#isp-search")?.value||"").toLowerCase().trim(), st=$("#isp-status")?.value||"";
+   const rows=arr.filter(o=>{const hay=[o.name,o.slug,o.owner_name,o.owner_email].join(" ").toLowerCase();return (!q||hay.includes(q))&&(!st||o.status===st)}).map(o=>{const sub=one(o.organization_subscriptions);return `<tr><td><b>${esc(o.name)}</b><br><span class="muted">${esc(o.slug||"")}</span></td><td><b>${esc(o.owner_name||"—")}</b><br><span class="muted">${esc(o.owner_email||"Sin OWNER")}</span></td><td>${badge(o.status)}</td><td>${o.customer_count||0}</td><td>${o.router_count||0}</td><td>${o.routers_online||0}</td><td><b>${esc(sub.plan_code||"—")}</b><br><span class="muted">${esc(sub.status||"—")}</span></td><td>${date(sub.current_period_ends_at||sub.trial_ends_at)}</td><td><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn ghost sm" data-edit="${o.id}">${icon("pencil")} Editar</button><button class="btn ghost sm" data-sub="${o.id}">${icon("credit-card")} Plan</button><button class="btn ghost sm" data-status="${o.id}">${icon("power")} Estado</button><button class="btn soft sm" data-reset="${o.id}">${icon("key-round")} OWNER</button></div></td></tr>`});
+   $("#isp-table").innerHTML=table(["ISP","OWNER","Estado","Clientes","Routers","Online","Suscripción","Vence","Acciones"],rows);hydrateIcons();
+   $$('[data-edit]',c).forEach(b=>b.onclick=()=>editISP(arr.find(o=>o.id===b.dataset.edit)));
+   $$('[data-sub]',c).forEach(b=>b.onclick=()=>editSubscription(arr.find(o=>o.id===b.dataset.sub)));
+   $$('[data-status]',c).forEach(b=>b.onclick=()=>editISPStatus(arr.find(o=>o.id===b.dataset.status)));
+   $$('[data-reset]',c).forEach(b=>b.onclick=()=>resetOwner(arr.find(o=>o.id===b.dataset.reset)));
+  };
+
+  const showCredentials=(title,email,password)=>setTimeout(()=>{const m=modal(title,`<div class="notice info">Entrega estas credenciales al OWNER por un canal seguro. ROOM ISP no guarda la contraseña en texto plano.</div><div style="height:12px"></div><div class="field"><label>Correo OWNER</label><div class="code-box">${esc(email||"—")}</div></div><div class="field"><label>Contraseña inicial</label><div class="code-box" id="owner-pass">${esc(password||"—")}</div></div><button type="button" class="btn soft" id="copy-owner">${icon("copy")} Copiar credenciales</button>`,null);$("#copy-owner",m).onclick=async()=>{await navigator.clipboard.writeText(`Correo: ${email}
+Contraseña: ${password}`);toast("Credenciales copiadas")};hydrateIcons()},350);
+
+  const createISP=async()=>{if(!(await requireAAL2()))return;modal("Crear nuevo ISP",`<div class="modal-grid"><div class="field span-2"><label>Nombre del ISP</label><input class="input" name="name" required placeholder="Fibra Perú SAC"></div><div class="field span-2"><label>Slug</label><input class="input" name="slug" placeholder="fibra-peru (opcional)"></div><div class="field span-2"><label>Nombre del OWNER</label><input class="input" name="owner_name" required placeholder="Administrador principal"></div><div class="field"><label>Correo del OWNER</label><input class="input" type="email" name="owner_email" required></div><div class="field"><label>Contraseña inicial</label><input class="input" type="password" minlength="10" name="owner_password" placeholder="Vacío = generar automáticamente"></div><div class="field"><label>Estado inicial</label><select class="select" name="org_status"><option value="TRIAL">TRIAL / Prueba</option><option value="ACTIVE">ACTIVE</option></select></div><div class="field"><label>Plan ROOM ISP</label><input class="input" name="plan_code" value="STARTER" required></div><div class="field"><label>Límite de routers</label><input class="input" type="number" min="0" name="router_limit" value="3" required></div><div class="field"><label>Límite de clientes</label><input class="input" type="number" min="0" name="customer_limit" value="500" required></div><div class="field"><label>Días de prueba</label><input class="input" type="number" min="0" max="90" name="trial_days" value="14"></div><div class="field"><label>Fin del periodo</label><input class="input" type="date" name="period_end"></div></div>`,async f=>{const orgStatus=val(f,"org_status");const r=await superApi("create_isp",{isp:{name:val(f,"name"),slug:val(f,"slug"),status:orgStatus},owner:{full_name:val(f,"owner_name"),email:val(f,"owner_email"),password:val(f,"owner_password")},subscription:{plan_code:val(f,"plan_code"),status:orgStatus,router_limit:num(f,"router_limit"),customer_limit:num(f,"customer_limit"),trial_days:num(f,"trial_days"),current_period_ends_at:val(f,"period_end")||null}});showCredentials("ISP creado correctamente",r.owner?.email,r.owner?.initial_password)} ,"Crear ISP")};
+
+  const editISP=async o=>{if(!o||!(await requireAAL2()))return;modal("Editar ISP",`<div class="field"><label>Nombre</label><input class="input" name="name" value="${esc(o.name)}" required></div><div class="field"><label>Slug</label><input class="input" name="slug" value="${esc(o.slug||"")}" required></div>`,async f=>superApi("update_organization",{organization_id:o.id,name:val(f,"name"),slug:val(f,"slug")}),"Guardar cambios")};
+
+  const editISPStatus=async o=>{if(!o||!(await requireAAL2()))return;modal("Estado del ISP",`<div class="notice info">Suspender la cuenta ROOM ISP no debe cortar directamente el Internet de sus abonados.</div><div style="height:14px"></div><div class="field"><label>Estado</label><select class="select" name="status"><option value="ACTIVE" ${o.status==="ACTIVE"?"selected":""}>ACTIVE</option><option value="TRIAL" ${o.status==="TRIAL"?"selected":""}>TRIAL</option><option value="SUSPENDED" ${o.status==="SUSPENDED"?"selected":""}>SUSPENDED</option></select></div>`,async f=>superApi("set_org_status",{organization_id:o.id,status:val(f,"status")}),"Actualizar estado")};
+
+  const editSubscription=async o=>{if(!o||!(await requireAAL2()))return;const s=one(o.organization_subscriptions);const dval=v=>v?String(v).slice(0,10):"";modal("Suscripción ROOM ISP",`<div class="modal-grid"><div class="field"><label>Plan</label><input class="input" name="plan_code" value="${esc(s.plan_code||"STARTER")}" required></div><div class="field"><label>Estado</label><select class="select" name="status">${["TRIAL","ACTIVE","PAST_DUE","SUSPENDED","CANCELLED"].map(x=>`<option value="${x}" ${s.status===x?"selected":""}>${x}</option>`).join("")}</select></div><div class="field"><label>Límite routers</label><input class="input" type="number" min="0" name="router_limit" value="${Number(s.router_limit??3)}"></div><div class="field"><label>Límite clientes</label><input class="input" type="number" min="0" name="customer_limit" value="${Number(s.customer_limit??500)}"></div><div class="field"><label>Fin trial</label><input class="input" type="date" name="trial_end" value="${esc(dval(s.trial_ends_at))}"></div><div class="field"><label>Fin periodo actual</label><input class="input" type="date" name="period_end" value="${esc(dval(s.current_period_ends_at))}"></div><div class="field span-2"><label>Notas internas</label><textarea class="textarea" name="notes" rows="3">${esc(s.notes||"")}</textarea></div></div>`,async f=>superApi("set_subscription",{organization_id:o.id,subscription:{plan_code:val(f,"plan_code"),status:val(f,"status"),router_limit:num(f,"router_limit"),customer_limit:num(f,"customer_limit"),trial_ends_at:val(f,"trial_end")||null,current_period_ends_at:val(f,"period_end")||null,notes:val(f,"notes")}}),"Guardar suscripción")};
+
+  const resetOwner=async o=>{if(!o||!(await requireAAL2()))return;modal("Restablecer contraseña OWNER",`<div class="notice danger">Esta acción cambia la contraseña de acceso del OWNER principal de <b>${esc(o.name)}</b>.</div><div style="height:14px"></div><div class="field"><label>Nueva contraseña</label><input class="input" type="password" minlength="10" name="password" placeholder="Vacío = generar automáticamente"></div>`,async f=>{const r=await superApi("reset_owner_password",{organization_id:o.id,password:val(f,"password")});showCredentials("Credenciales OWNER actualizadas",r.owner_email,r.initial_password)},"Cambiar contraseña")};
+
+  $("#new-isp").onclick=createISP;$("#isp-search").oninput=draw;$("#isp-status").onchange=draw;draw();return;
  }
  if(page==="routers"){
   const {data,error}=await sb.from("routers").select("id,name,status,last_seen,routeros_version,model,organizations(name)").order("last_seen",{ascending:false}).limit(500);if(error)throw error;
@@ -338,3 +364,4 @@ sb.auth.onAuthStateChange(async(event,session)=>{
 
 start();
 })();
+
